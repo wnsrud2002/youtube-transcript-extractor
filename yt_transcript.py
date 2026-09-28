@@ -1,4 +1,5 @@
 """유튜브 링크 → 대사 텍스트."""
+from __future__ import annotations  # macOS 기본 Python 3.9에서도 `str | None` 표기가 동작하도록
 import argparse
 import re
 import sys
@@ -55,9 +56,13 @@ WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
 def transcribe(vid: str, lang: str, timestamps=False) -> str:
     """오디오를 받아 Whisper로 직접 받아쓰기. 자동 자막보다 정확하고 문장부호가 붙음."""
     import tempfile
-    import mlx_whisper
-    import yt_dlp
     from types import SimpleNamespace
+    try:
+        import mlx_whisper
+        import yt_dlp
+    except ImportError:
+        # 고정밀 모드는 용량이 커서(약 1.2GB) 선택 설치로 분리함
+        raise ExtractError("고정밀 모드가 설치되지 않았습니다. '고정밀모드 설치.command'를 먼저 실행하세요.")
 
     with tempfile.TemporaryDirectory() as tmp:
         opts = {"format": "bestaudio[ext=m4a]/bestaudio", "outtmpl": f"{tmp}/%(id)s.%(ext)s",
