@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>유튜브 자막 추출</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --fg: #1d1d1f; --muted: #6e6e73;
+    --line: #e2e0db; --accent: #e5322d; --accent-fg: #fff; --err-bg: #fdecea; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141414; --card: #1e1e1f; --fg: #f2f2f2; --muted: #9a9aa0;
+      --line: #333336; --accent: #ff4b44; --accent-fg: #fff; --err-bg: #3a1d1b; --err: #ffb4ab;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  form { display: flex; gap: 8px; }
+  input[type=url] {
+    flex: 1; min-width: 0; padding: 14px 16px; font-size: 16px; color: var(--fg);
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px; outline: none;
+  }
+  input[type=url]:focus { border-color: var(--accent); }
+  button {
+    padding: 0 20px; font-size: 15px; font-weight: 600; cursor: pointer;
+    border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .opts { display: flex; gap: 20px; flex-wrap: wrap; margin: 14px 2px 0; color: var(--muted); font-size: 14px; }
+  .opts label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  select { font-size: 14px; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 2px 6px; }
+  .error { margin-top: 20px; padding: 12px 16px; border-radius: 12px; background: var(--err-bg); color: var(--err); }
+  .result { margin-top: 28px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line); }
+  .bar .meta { flex: 1; color: var(--muted); font-size: 13px; }
+  .bar button { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
+  pre {
+    margin: 0; padding: 16px; max-height: 60vh; overflow: auto;
+    white-space: pre-wrap; word-break: break-word; font: inherit;
+  }
+  .spin {
+    display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px;
+    border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+    animation: r .7s linear infinite;
+  }
+  @keyframes r { to { transform: rotate(360deg); } }
+  [hidden] { display: none !important; }
+  @media (max-width: 520px) { form { flex-direction: column; } button.primary { padding: 14px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1><span>▶</span> 유튜브 자막 추출</h1>
+  <p class="sub">링크를 붙여넣으면 영상 대사를 텍스트로 뽑아줍니다.</p>
+
+  <form id="f">
+    <input id="url" type="url" required placeholder="https://www.youtube.com/watch?v=..." aria-label="유튜브 링크" autofocus>
+    <button class="primary" id="go">텍스트 추출</button>
+  </form>
+  <div class="opts">
+    <label><input type="checkbox" id="ts"> 시간 표시</label>
+    <label title="유튜브 자동 자막 대신 음성을 직접 받아씁니다. 정확하지만 영상 길이에 비례해 시간이 걸립니다."><input type="checkbox" id="hq"> 고정밀 모드 (느림)</label>
+    <label>언어
+      <select id="lang">
+        <option value="ko,en">한국어 우선</option>
+        <option value="en,ko">영어 우선</option>
+        <option value="ja,ko,en">일본어 우선</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="error" id="err" role="alert" hidden></div>
+
+  <section class="result" id="res" hidden>
+    <div class="bar">
+      <span class="meta" id="meta"></span>
+      <button id="copy">복사</button>
+      <button id="dl">.txt 다운로드</button>
+    </div>
+    <pre id="out"></pre>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let lastId = "transcript";
+
+$("f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const go = $("go");
+  go.disabled = true;
+  go.innerHTML = `<span class="spin"></span>${$("hq").checked ? "받아쓰는 중 (몇 분 걸림)" : "추출 중"}`;
+  $("err").hidden = true;
+  try {
+    const r = await fetch("/api/extract", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({url: $("url").value, lang: $("lang").value, timestamps: $("ts").checked, whisper: $("hq").checked}),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error);
+    $("out").textContent = data.text;
+    const words = data.text.length.toLocaleString();
+    $("meta").textContent = `${data.source} · ${words}자`;
+    lastId = ($("url").value.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([\w-]{11})/) || [, "transcript"])[1];
+    $("res").hidden = false;
+  } catch (err) {
+    $("err").textContent = err.message === "Failed to fetch"
+      ? "서버에 연결할 수 없습니다. 실행 창이 켜져 있는지 확인하세요."
+      : err.message;
+    $("err").hidden = false;
+  } finally {
+    go.disabled = false;
+    go.textContent = "텍스트 추출";
+  }
+});
+
+$("copy").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("out").textContent);
+  $("copy").textContent = "복사됨 ✓";
+  setTimeout(() => $("copy").textContent = "복사", 1500);
+});
+
+$("dl").addEventListener("click", () => {
+  const blob = new Blob([$("out").textContent + "\n"], {type: "text/plain;charset=utf-8"});
+  const a = Object.assign(document.createElement("a"), {href: URL.createObjectURL(blob), download: `${lastId}.txt`});
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+</script>
+</body>
+</html>
