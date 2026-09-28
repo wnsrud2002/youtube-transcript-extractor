@@ -1,8 +1,12 @@
 """유튜브 링크 → 대사 텍스트."""
 from __future__ import annotations  # macOS 기본 Python 3.9에서도 `str | None` 표기가 동작하도록
 import argparse
+import datetime
+import json
 import re
 import sys
+import urllib.parse
+import urllib.request
 
 ID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/|embed/|live/)([A-Za-z0-9_-]{11})")
 # 자동생성 자막에 섞이는 [음악], [Music], [박수] 같은 효과음 태그
@@ -46,6 +50,50 @@ def render(snippets, timestamps=False) -> str:
     return "\n".join(lines) if timestamps else " ".join(lines)
 
 
+# 자막에 섞이면 굵게·코드·HTML로 잘못 렌더링되는 기호만 이스케이프.
+# `_`·`[]`까지 처리하면 제목이 `\[강의\]\_1` 처럼 원문 가독성이 나빠져서 제외
+MD_SPECIAL_RE = re.compile(r"([\\`*<>])")
+
+
+def md_escape(text: str) -> str:
+    text = MD_SPECIAL_RE.sub(r"\\\1", text)
+    # 줄 첫머리 #은 제목으로 바뀌므로 (예: 해시태그로 시작하는 자막)
+    return "\\" + text if text.startswith("#") else text
+
+
+def fetch_meta(vid: str) -> dict:
+    """영상 제목·채널명. oEmbed는 키 없는 공개 API라 실패해도 추출은 계속되게 빈 dict 반환."""
+    url = "https://www.youtube.com/oembed?format=json&url=" + urllib.parse.quote(f"https://www.youtube.com/watch?v={vid}")
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            data = json.load(r)
+        return {"title": data.get("title", ""), "author": data.get("author_name", "")}
+    except Exception:
+        return {}
+
+
+def md_header(vid: str, meta: dict, source: str) -> str:
+    lines = [f"# {md_escape(meta.get('title') or f'YouTube 영상 {vid}')}", "", f"- 영상: https://youtu.be/{vid}"]
+    if meta.get("author"):
+        lines.append(f"- 채널: {md_escape(meta['author'])}")
+    lines += [f"- 출처: {source}", f"- 추출일: {datetime.date.today().isoformat()}", "", "---", "", ""]
+    return "\n".join(lines)
+
+
+def md_body(snippets, vid: str, timestamps=False) -> str:
+    """시간 표시: 줄마다 해당 장면 링크. 아니면 1분 단위 문단으로 묶어 읽기 좋게."""
+    if timestamps:
+        return "\n".join(
+            f"- [{stamp(sn.start)}](https://youtu.be/{vid}?t={int(sn.start)}) {md_escape(t)}"
+            for sn in snippets if (t := clean(sn.text))
+        )
+    paras = {}
+    for sn in snippets:
+        if t := clean(sn.text):
+            paras.setdefault(int(sn.start // 60), []).append(md_escape(t))
+    return "\n\n".join(" ".join(p) for p in paras.values())
+
+
 class ExtractError(Exception):
     """사용자에게 그대로 보여줄 한국어 메시지를 담는 오류."""
 
@@ -53,7 +101,7 @@ class ExtractError(Exception):
 WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
 
 
-def transcribe(vid: str, lang: str, timestamps=False) -> str:
+def transcribe(vid: str, lang: str) -> list:
     """오디오를 받아 Whisper로 직접 받아쓰기. 자동 자막보다 정확하고 문장부호가 붙음."""
     import tempfile
     from types import SimpleNamespace
@@ -79,17 +127,16 @@ def transcribe(vid: str, lang: str, timestamps=False) -> str:
             # 문장부호가 있는 예시를 주면 Whisper가 출력에도 문장부호를 붙임
             initial_prompt="안녕하세요. 오늘 수업을 시작하겠습니다." if lang == "ko" else None,
         )
-    segs = [SimpleNamespace(text=s["text"], start=s["start"]) for s in result["segments"]]
-    return render(segs, timestamps)
+    return [SimpleNamespace(text=s["text"], start=s["start"]) for s in result["segments"]]
 
 
-def extract(url: str, langs=("ko", "en"), timestamps=False, whisper=False):
-    """(텍스트, 출처 설명) 반환. 실패 시 ExtractError."""
+def extract(url: str, langs=("ko", "en"), whisper=False):
+    """(영상 ID, 자막 조각 목록, 출처 설명) 반환. 실패 시 ExtractError."""
     vid = video_id(url.strip())
     if not vid:
         raise ExtractError("유효한 유튜브 링크가 아닙니다.")
     if whisper:
-        return transcribe(vid, langs[0], timestamps), f"Whisper 받아쓰기 ({langs[0]})"
+        return vid, transcribe(vid, langs[0]), f"Whisper 받아쓰기 ({langs[0]})"
 
     # 파서 테스트가 네트워크 라이브러리 없이 돌도록 여기서 import
     from youtube_transcript_api import (
@@ -101,7 +148,7 @@ def extract(url: str, langs=("ko", "en"), timestamps=False, whisper=False):
         t = pick(YouTubeTranscriptApi().list(vid), list(langs))
         if t is None:
             raise ExtractError("이 영상에는 자막이 없습니다.")
-        return render(t.fetch(), timestamps), f"{t.language_code}{' 자동생성' if t.is_generated else ''} 자막"
+        return vid, list(t.fetch()), f"{t.language_code}{' 자동생성' if t.is_generated else ''} 자막"
     except TranscriptsDisabled:
         raise ExtractError("이 영상은 자막이 꺼져 있습니다.")
     except VideoUnavailable:
@@ -117,16 +164,21 @@ def extract(url: str, langs=("ko", "en"), timestamps=False, whisper=False):
 def main(argv=None):
     p = argparse.ArgumentParser(description="유튜브 영상 자막을 텍스트로 추출")
     p.add_argument("url")
-    p.add_argument("-o", "--output", help="저장할 파일 경로 (생략 시 화면 출력)")
+    p.add_argument("-o", "--output", help="저장할 파일 경로 (.md로 끝나면 마크다운, 생략 시 화면 출력)")
     p.add_argument("--lang", default="ko,en", help="언어 우선순위, 쉼표 구분 (기본 ko,en)")
     p.add_argument("--timestamps", action="store_true", help="줄마다 [mm:ss] 표시")
     p.add_argument("--whisper", action="store_true", help="자막 대신 음성을 직접 받아쓰기 (정확하지만 느림)")
     args = p.parse_args(argv)
 
     try:
-        text, source = extract(args.url, args.lang.split(","), args.timestamps, args.whisper)
+        vid, snippets, source = extract(args.url, args.lang.split(","), args.whisper)
     except ExtractError as e:
         sys.exit(str(e))
+
+    if args.output and args.output.lower().endswith(".md"):
+        text = md_header(vid, fetch_meta(vid), source) + md_body(snippets, vid, args.timestamps)
+    else:
+        text = render(snippets, args.timestamps)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:

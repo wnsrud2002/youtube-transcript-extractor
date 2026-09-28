@@ -4,7 +4,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from yt_transcript import ExtractError, extract
+from yt_transcript import ExtractError, extract, fetch_meta, md_body, md_header, render
 
 PAGE = Path(__file__).with_name("index.html")
 
@@ -35,15 +35,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             req = json.loads(self.rfile.read(length))
             langs = [l.strip() for l in str(req.get("lang", "ko,en")).split(",") if l.strip()]
-            text, source = extract(str(req.get("url", "")), langs or ["ko", "en"],
-                                   bool(req.get("timestamps")), bool(req.get("whisper")))
+            ts = bool(req.get("timestamps"))
+            vid, snippets, source = extract(str(req.get("url", "")), langs or ["ko", "en"], bool(req.get("whisper")))
         except ExtractError as e:
             return self._json(400, {"error": str(e)})
         except (ValueError, AttributeError):
             return self._json(400, {"error": "잘못된 요청입니다."})
         except Exception as e:  # 네트워크 끊김 등 예상 못 한 오류도 화면에 보여줌
             return self._json(500, {"error": f"알 수 없는 오류: {type(e).__name__}"})
-        self._json(200, {"text": text, "source": source})
+        meta = fetch_meta(vid)
+        # 고정밀 모드를 다시 돌리지 않도록 txt·md 두 형식을 한 번에 돌려줌
+        self._json(200, {
+            "vid": vid, "source": source, "title": meta.get("title", ""),
+            "text": render(snippets, ts),
+            "md_header": md_header(vid, meta, source), "md_body": md_body(snippets, vid, ts),
+        })
 
     def log_message(self, fmt, *args):
         pass  # 요청마다 찍히는 로그가 터미널을 덮지 않게

@@ -59,6 +59,17 @@
     animation: r .7s linear infinite;
   }
   @keyframes r { to { transform: rotate(360deg); } }
+  .summary { margin-top: 20px; padding: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; }
+  .summary h2 { font-size: 16px; margin: 0 0 4px; }
+  .summary p { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+  .summary textarea {
+    width: 100%; min-height: 160px; padding: 12px; font: inherit; font-size: 14px; resize: vertical;
+    color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; outline: none;
+  }
+  .summary textarea:focus { border-color: var(--accent); }
+  .summary .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 10px; color: var(--muted); font-size: 14px; }
+  .summary .row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .summary .row button { margin-left: auto; padding: 8px 14px; font-size: 14px; }
   [hidden] { display: none !important; }
   @media (max-width: 520px) { form { flex-direction: column; } button.primary { padding: 14px; } }
 </style>
@@ -91,16 +102,38 @@
       <span class="meta" id="meta"></span>
       <button id="copy">복사</button>
       <button id="dl">.txt 다운로드</button>
+      <button id="dlmd">.md 다운로드</button>
       <button id="sumcopy" title="요점정리 요청문 + 전문을 복사합니다. claude.ai 등 AI 채팅에 붙여넣으세요.">요점정리용 복사</button>
       <a class="btn" href="https://claude.ai/new" target="_blank" rel="noopener">Claude 열기 ↗</a>
     </div>
     <pre id="out"></pre>
   </section>
+
+  <section class="summary" id="sum" hidden>
+    <h2>요점정리 .md로 저장</h2>
+    <p>AI 답변의 복사 버튼으로 복사한 요점정리를 붙여넣으면, 영상 정보와 합쳐 마크다운 노트로 저장합니다.</p>
+    <textarea id="sumtext" placeholder="여기에 AI가 정리한 요약을 붙여넣으세요 (Cmd+V)" aria-label="요점정리 붙여넣기"></textarea>
+    <div class="row">
+      <label><input type="checkbox" id="sumfull" checked> 전체 대사도 함께 저장</label>
+      <button class="primary" id="dlsum" disabled>요약 .md 다운로드</button>
+    </div>
+  </section>
 </main>
 
 <script>
 const $ = id => document.getElementById(id);
-let lastId = "transcript";
+// 마지막 추출 결과. .md 파일 조립과 파일명에 사용
+let last = null;
+
+function download(content, name, type) {
+  const blob = new Blob([content], {type: `${type};charset=utf-8`});
+  const a = Object.assign(document.createElement("a"), {href: URL.createObjectURL(blob), download: name});
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// 파일명에 쓸 수 없는 문자 제거. 제목이 없으면 영상 ID
+const fileBase = () => ((last.title || last.vid).replace(/[\\/:*?"<>|]/g, "_").trim().slice(0, 80) || last.vid);
 
 $("f").addEventListener("submit", async e => {
   e.preventDefault();
@@ -119,8 +152,12 @@ $("f").addEventListener("submit", async e => {
     $("out").textContent = data.text;
     const words = data.text.length.toLocaleString();
     $("meta").textContent = `${data.source} · ${words}자`;
-    lastId = ($("url").value.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([\w-]{11})/) || [, "transcript"])[1];
+    last = data;
+    // 이전 영상의 요약이 새 영상 정보와 섞여 저장되지 않게 비움
+    $("sumtext").value = "";
+    $("dlsum").disabled = true;
     $("res").hidden = false;
+    $("sum").hidden = false;
   } catch (err) {
     $("err").textContent = err.message === "Failed to fetch"
       ? "서버에 연결할 수 없습니다. 실행 창이 켜져 있는지 확인하세요."
@@ -140,10 +177,10 @@ $("copy").addEventListener("click", async () => {
 
 const SUMMARY_PROMPT = `다음은 유튜브 영상의 대사를 받아쓴 텍스트야. 요점정리해줘.
 
-형식:
-1. 핵심 요약 3줄
-2. 주제별 요점 (소제목 + 글머리표)
-3. 중요한 용어·숫자·고유명사 정리
+마크다운 형식으로 작성하고, 소제목은 ### 로 시작해줘:
+### 핵심 요약 (3줄)
+### 주제별 요점 (주제마다 #### 소제목 + 글머리표)
+### 중요한 용어·숫자·고유명사
 
 받아쓰기라 오타나 잘못 인식된 단어가 있을 수 있으니 문맥으로 판단해줘.
 
@@ -156,11 +193,14 @@ $("sumcopy").addEventListener("click", async () => {
   setTimeout(() => $("sumcopy").textContent = "요점정리용 복사", 2000);
 });
 
-$("dl").addEventListener("click", () => {
-  const blob = new Blob([$("out").textContent + "\n"], {type: "text/plain;charset=utf-8"});
-  const a = Object.assign(document.createElement("a"), {href: URL.createObjectURL(blob), download: `${lastId}.txt`});
-  a.click();
-  URL.revokeObjectURL(a.href);
+$("dl").addEventListener("click", () => download(last.text + "\n", `${fileBase()}.txt`, "text/plain"));
+$("dlmd").addEventListener("click", () => download(last.md_header + last.md_body + "\n", `${fileBase()}.md`, "text/markdown"));
+
+$("sumtext").addEventListener("input", () => $("dlsum").disabled = !$("sumtext").value.trim());
+$("dlsum").addEventListener("click", () => {
+  let md = last.md_header + "## 요점정리\n\n" + $("sumtext").value.trim() + "\n";
+  if ($("sumfull").checked) md += "\n---\n\n## 전체 대사\n\n" + last.md_body + "\n";
+  download(md, `${fileBase()} - 요점정리.md`, "text/markdown");
 });
 </script>
 </body>
