@@ -70,6 +70,14 @@
   .summary .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 10px; color: var(--muted); font-size: 14px; }
   .summary .row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
   .summary .row button { margin-left: auto; padding: 8px 14px; font-size: 14px; }
+  .fname { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .result > .fname { padding: 8px 12px 8px 16px; border-bottom: 1px solid var(--line); }
+  .summary .fname { margin-top: 10px; font-size: 14px; }
+  .fname input {
+    flex: 1; min-width: 0; padding: 6px 10px; font: inherit; color: var(--fg);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px; outline: none;
+  }
+  .fname input:focus { border-color: var(--accent); }
   [hidden] { display: none !important; }
   @media (max-width: 520px) { form { flex-direction: column; } button.primary { padding: 14px; } }
 </style>
@@ -106,6 +114,7 @@
       <button id="sumcopy" title="요점정리 요청문 + 전문을 복사합니다. claude.ai 등 AI 채팅에 붙여넣으세요.">요점정리용 복사</button>
       <a class="btn" href="https://claude.ai/new" target="_blank" rel="noopener">Claude 열기 ↗</a>
     </div>
+    <label class="fname">파일 이름 <input id="fname" aria-label="저장할 파일 이름" spellcheck="false"> .txt / .md</label>
     <pre id="out"></pre>
   </section>
 
@@ -113,6 +122,7 @@
     <h2>요점정리 .md로 저장</h2>
     <p>AI 답변의 복사 버튼으로 복사한 요점정리를 붙여넣으면, 영상 정보와 합쳐 마크다운 노트로 저장합니다.</p>
     <textarea id="sumtext" placeholder="여기에 AI가 정리한 요약을 붙여넣으세요 (Cmd+V)" aria-label="요점정리 붙여넣기"></textarea>
+    <label class="fname">파일 이름 <input id="sumname" aria-label="요점정리 파일 이름" spellcheck="false"> .md</label>
     <div class="row">
       <label><input type="checkbox" id="sumfull" checked> 전체 대사도 함께 저장</label>
       <button class="primary" id="dlsum" disabled>요약 .md 다운로드</button>
@@ -133,7 +143,11 @@ function download(content, name, type) {
 }
 
 // 파일명에 쓸 수 없는 문자 제거. 제목이 없으면 영상 ID
-const fileBase = () => ((last.title || last.vid).replace(/[\\/:*?"<>|]/g, "_").trim().slice(0, 80) || last.vid);
+// 파일명에 쓸 수 없는 문자 제거. 사용자가 확장자까지 적어도 중복되지 않게 떼어냄. 비면 fallback
+const safeName = (v, fallback) =>
+  v.trim().replace(/\.(md|txt)$/i, "").replace(/[\\/:*?"<>|]/g, "_").trim().slice(0, 120) || fallback;
+// 기본 파일명: 영상 제목, 없으면 영상 ID
+const fileBase = () => safeName(last.title || "", last.vid);
 
 $("f").addEventListener("submit", async e => {
   e.preventDefault();
@@ -155,6 +169,8 @@ $("f").addEventListener("submit", async e => {
     last = data;
     // 이전 영상의 요약이 새 영상 정보와 섞여 저장되지 않게 비움
     $("sumtext").value = "";
+    $("fname").value = fileBase();
+    $("sumname").value = `${fileBase()} - 요점정리`;
     $("dlsum").disabled = true;
     $("res").hidden = false;
     $("sum").hidden = false;
@@ -193,14 +209,14 @@ $("sumcopy").addEventListener("click", async () => {
   setTimeout(() => $("sumcopy").textContent = "요점정리용 복사", 2000);
 });
 
-$("dl").addEventListener("click", () => download(last.text + "\n", `${fileBase()}.txt`, "text/plain"));
-$("dlmd").addEventListener("click", () => download(last.md_header + last.md_body + "\n", `${fileBase()}.md`, "text/markdown"));
+$("dl").addEventListener("click", () => download(last.text + "\n", `${safeName($("fname").value, fileBase())}.txt`, "text/plain"));
+$("dlmd").addEventListener("click", () => download(last.md_header + last.md_body + "\n", `${safeName($("fname").value, fileBase())}.md`, "text/markdown"));
 
 $("sumtext").addEventListener("input", () => $("dlsum").disabled = !$("sumtext").value.trim());
 $("dlsum").addEventListener("click", () => {
   let md = last.md_header + "## 요점정리\n\n" + $("sumtext").value.trim() + "\n";
   if ($("sumfull").checked) md += "\n---\n\n## 전체 대사\n\n" + last.md_body + "\n";
-  download(md, `${fileBase()} - 요점정리.md`, "text/markdown");
+  download(md, `${safeName($("sumname").value, `${fileBase()} - 요점정리`)}.md`, "text/markdown");
 });
 </script>
 </body>
